@@ -3,7 +3,7 @@
 #	Autoconf source.
 #
 #	Free exFAT implementation.
-#	Copyright (C) 2010-2015  Andrew Nayenko
+#	Copyright (C) 2010-2018  Andrew Nayenko
 #
 #	This program is free software; you can redistribute it and/or modify
 #	it under the terms of the GNU General Public License as published by
@@ -21,17 +21,30 @@
 #
 
 AC_INIT([Free exFAT implementation],
-	[1.2.3],
+	[1.3.0],
 	[relan@users.noreply.github.com],
 	[exfat],
 	[https://github.com/relan/exfat])
-AM_INIT_AUTOMAKE([1.11.2 -Wall -Werror foreign subdir-objects no-installman])
+AM_INIT_AUTOMAKE([1.11.2 -Wall -Werror foreign subdir-objects])
 AC_PROG_CC
 AC_PROG_CC_C99
 AC_PROG_RANLIB
 AM_PROG_AR
 AC_SYS_LARGEFILE
+AC_CANONICAL_HOST
+PKG_CHECK_MODULES([UBLIO], [libublio], [
+  CFLAGS="$CFLAGS $UBLIO_CFLAGS"
+  LIBS="$LIBS $UBLIO_LIBS"
+  AC_DEFINE([USE_UBLIO], [1],
+    [Define if block devices are not supported.])
+], [:])
 PKG_CHECK_MODULES([FUSE], [fuse])
+case "$host_os" in
+  *-gnu)
+    AC_DEFINE([_XOPEN_SOURCE], [500], [Enable pread() and pwrite().])
+    AC_DEFINE([_DEFAULT_SOURCE], [], [Enable vsyslog().])
+	;;
+esac
 AC_CONFIG_HEADERS([libexfat/config.h])
 AC_CONFIG_FILES([
 	libexfat/Makefile

@@ -3,7 +3,7 @@
 	exFAT file system implementation library.
 
 	Free exFAT implementation.
-	Copyright (C) 2010-2015  Andrew Nayenko
+	Copyright (C) 2010-2018  Andrew Nayenko
 
 	This program is free software; you can redistribute it and/or modify
 	it under the terms of the GNU General Public License as published by
@@ -104,26 +104,35 @@ static const le16_t* utf16_to_wchar(const le16_t* input, wchar_t* wc,
 int utf16_to_utf8(char* output, const le16_t* input, size_t outsize,
 		size_t insize)
 {
-	const le16_t* inp = input;
-	char* outp = output;
+	const le16_t* iptr = input;
+	const le16_t* iend = input + insize;
+	char* optr = output;
+	const char* oend = output + outsize;
 	wchar_t wc;
 
-	while (inp - input < insize && le16_to_cpu(*inp))
+	while (iptr < iend)
 	{
-		inp = utf16_to_wchar(inp, &wc, insize - (inp - input));
-		if (inp == NULL)
+		iptr = utf16_to_wchar(iptr, &wc, iend - iptr);
+		if (iptr == NULL)
 		{
 			exfat_error("illegal UTF-16 sequence");
 			return -EILSEQ;
 		}
-		outp = wchar_to_utf8(outp, wc, outsize - (outp - output));
-		if (outp == NULL)
+		optr = wchar_to_utf8(optr, wc, oend - optr);
+		if (optr == NULL)
 		{
 			exfat_error("name is too long");
 			return -ENAMETOOLONG;
 		}
+		if (wc == 0)
+			return 0;
 	}
-	*outp = '\0';
+	if (optr >= oend)
+	{
+		exfat_error("name is too long");
+		return -ENAMETOOLONG;
+	}
+	*optr = '\0';
 	return 0;
 }
 
@@ -198,26 +207,35 @@ static le16_t* wchar_to_utf16(le16_t* output, wchar_t wc, size_t outsize)
 int utf8_to_utf16(le16_t* output, const char* input, size_t outsize,
 		size_t insize)
 {
-	const char* inp = input;
-	le16_t* outp = output;
+	const char* iptr = input;
+	const char* iend = input + insize;
+	le16_t* optr = output;
+	const le16_t* oend = output + outsize;
 	wchar_t wc;
 
-	while (inp - input < insize && *inp)
+	while (iptr < iend)
 	{
-		inp = utf8_to_wchar(inp, &wc, insize - (inp - input));
-		if (inp == NULL)
+		iptr = utf8_to_wchar(iptr, &wc, iend - iptr);
+		if (iptr == NULL)
 		{
 			exfat_error("illegal UTF-8 sequence");
 			return -EILSEQ;
 		}
-		outp = wchar_to_utf16(outp, wc, outsize - (outp - output));
-		if (outp == NULL)
+		optr = wchar_to_utf16(optr, wc, oend - optr);
+		if (optr == NULL)
 		{
 			exfat_error("name is too long");
 			return -ENAMETOOLONG;
 		}
+		if (wc == 0)
+			break;
 	}
-	*outp = cpu_to_le16(0);
+	if (optr >= oend)
+	{
+		exfat_error("name is too long");
+		return -ENAMETOOLONG;
+	}
+	*optr = cpu_to_le16(0);
 	return 0;
 }
 

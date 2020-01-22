@@ -3,7 +3,7 @@
 	exFAT file system implementation library.
 
 	Free exFAT implementation.
-	Copyright (C) 2010-2015  Andrew Nayenko
+	Copyright (C) 2010-2018  Andrew Nayenko
 
 	This program is free software; you can redistribute it and/or modify
 	it under the terms of the GNU General Public License as published by
@@ -35,8 +35,9 @@
 #include <sys/disklabel.h>
 #include <sys/dkio.h>
 #include <sys/ioctl.h>
-#endif
+#elif __linux__
 #include <sys/mount.h>
+#endif
 #ifdef USE_UBLIO
 #include <sys/uio.h>
 #include <ublio.h>
@@ -52,6 +53,11 @@ struct exfat_dev
 	ublio_filehandle_t ufh;
 #endif
 };
+
+static bool is_open(int fd)
+{
+	return fcntl(fd, F_GETFD) != -1;
+}
 
 static int open_ro(const char* spec)
 {
@@ -85,6 +91,24 @@ struct exfat_dev* exfat_open(const char* spec, enum exfat_mode mode)
 #ifdef USE_UBLIO
 	struct ublio_param up;
 #endif
+
+	/* The system allocates file descriptors sequentially. If we have been
+	   started with stdin (0), stdout (1) or stderr (2) closed, the system
+	   will give us descriptor 0, 1 or 2 later when we open block device,
+	   FUSE communication pipe, etc. As a result, functions using stdin,
+	   stdout or stderr will actually work with a different thing and can
+	   corrupt it. Protect descriptors 0, 1 and 2 from such misuse. */
+	while (!is_open(STDIN_FILENO)
+		|| !is_open(STDOUT_FILENO)
+		|| !is_open(STDERR_FILENO))
+	{
+		/* we don't need those descriptors, let them leak */
+		if (open("/dev/null", O_RDWR) == -1)
+		{
+			exfat_error("failed to open /dev/null");
+			return NULL;
+		}
+	}
 
 	dev = malloc(sizeof(struct exfat_dev));
 	if (dev == NULL)
@@ -359,34 +383,34 @@ ssize_t exfat_generic_pread(const struct exfat* ef, struct exfat_node* node,
 		return 0;
 
 	cluster = exfat_advance_cluster(ef, node, offset / CLUSTER_SIZE(*ef->sb));
-	if (CLUSTER_INVALID(cluster))
+	if (CLUSTER_INVALID(*ef->sb, cluster))
 	{
 		exfat_error("invalid cluster 0x%x while reading", cluster);
-		return -1;
+		return -EIO;
 	}
 
 	loffset = offset % CLUSTER_SIZE(*ef->sb);
 	remainder = MIN(size, node->size - offset);
 	while (remainder > 0)
 	{
-		if (CLUSTER_INVALID(cluster))
+		if (CLUSTER_INVALID(*ef->sb, cluster))
 		{
 			exfat_error("invalid cluster 0x%x while reading", cluster);
-			return -1;
+			return -EIO;
 		}
 		lsize = MIN(CLUSTER_SIZE(*ef->sb) - loffset, remainder);
 		if (exfat_pread(ef->dev, bufp, lsize,
 					exfat_c2o(ef, cluster) + loffset) < 0)
 		{
 			exfat_error("failed to read cluster %#x", cluster);
-			return -1;
+			return -EIO;
 		}
 		bufp += lsize;
 		loffset = 0;
 		remainder -= lsize;
 		cluster = exfat_next_cluster(ef, node, cluster);
 	}
-	if (!ef->ro && !ef->noatime)
+	if (!(node->attrib & EXFAT_ATTRIB_DIR) && !ef->ro && !ef->noatime)
 		exfat_update_atime(node);
 	return MIN(size, node->size - offset) - remainder;
 }
@@ -394,47 +418,57 @@ ssize_t exfat_generic_pread(const struct exfat* ef, struct exfat_node* node,
 ssize_t exfat_generic_pwrite(struct exfat* ef, struct exfat_node* node,
 		const void* buffer, size_t size, off_t offset)
 {
+	int rc;
 	cluster_t cluster;
 	const char* bufp = buffer;
 	off_t lsize, loffset, remainder;
 
  	if (offset > node->size)
- 		if (exfat_truncate(ef, node, offset, true) != 0)
- 			return -1;
+	{
+		rc = exfat_truncate(ef, node, offset, true);
+		if (rc != 0)
+			return rc;
+	}
   	if (offset + size > node->size)
- 		if (exfat_truncate(ef, node, offset + size, false) != 0)
- 			return -1;
+	{
+		rc = exfat_truncate(ef, node, offset + size, false);
+		if (rc != 0)
+			return rc;
+	}
 	if (size == 0)
 		return 0;
 
 	cluster = exfat_advance_cluster(ef, node, offset / CLUSTER_SIZE(*ef->sb));
-	if (CLUSTER_INVALID(cluster))
+	if (CLUSTER_INVALID(*ef->sb, cluster))
 	{
 		exfat_error("invalid cluster 0x%x while writing", cluster);
-		return -1;
+		return -EIO;
 	}
 
 	loffset = offset % CLUSTER_SIZE(*ef->sb);
 	remainder = size;
 	while (remainder > 0)
 	{
-		if (CLUSTER_INVALID(cluster))
+		if (CLUSTER_INVALID(*ef->sb, cluster))
 		{
 			exfat_error("invalid cluster 0x%x while writing", cluster);
-			return -1;
+			return -EIO;
 		}
 		lsize = MIN(CLUSTER_SIZE(*ef->sb) - loffset, remainder);
 		if (exfat_pwrite(ef->dev, bufp, lsize,
 				exfat_c2o(ef, cluster) + loffset) < 0)
 		{
 			exfat_error("failed to write cluster %#x", cluster);
-			return -1;
+			return -EIO;
 		}
 		bufp += lsize;
 		loffset = 0;
 		remainder -= lsize;
 		cluster = exfat_next_cluster(ef, node, cluster);
 	}
-	exfat_update_mtime(node);
+	if (!(node->attrib & EXFAT_ATTRIB_DIR))
+		/* directory's mtime should be updated by the caller only when it
+		   creates or removes something in this directory */
+		exfat_update_mtime(node);
 	return size - remainder;
 }
